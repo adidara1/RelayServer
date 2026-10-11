@@ -17,7 +17,7 @@ private static void SaveMessage(string message)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(HistoryPath)!);
         File.AppendAllText(HistoryPath,
-            $"[{DateTime.UtcNow:yyyy-MM-dd HH:mm}] {message}{Environment.NewLine}");
+            $"[{DateTime.UtcNow.AddHours(2):HH:mm}] {message}{Environment.NewLine}");
     }
     catch (Exception ex)
     {

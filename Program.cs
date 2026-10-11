@@ -14,7 +14,7 @@ class RelayServer
     static async Task Main(string[] args)
     {
         // Support cloud hosting environment variables for the port, default to 5000
-        int port = 5000;
+        int port = 8080;
         if (int.TryParse(Environment.GetEnvironmentVariable("PORT"), out int envPort))
         {
             port = envPort;

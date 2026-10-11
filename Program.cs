@@ -5,9 +5,36 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using System.Threading.Tasks;
+using System.Linq; 
 
 class RelayServer
 {
+    private static readonly string HistoryPath =
+    Environment.GetEnvironmentVariable("HISTORY_PATH") ?? "/data/chat_history.txt";
+private static void SaveMessage(string message)
+{
+    try
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(HistoryPath)!);
+        File.AppendAllText(HistoryPath,
+            $"[{DateTime.UtcNow:yyyy-MM-dd HH:mm}] {message}{Environment.NewLine}");
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[Server] Could not save message: {ex.Message}");
+    }
+}
+private static void SendHistory(TcpClient client)
+{
+    if (!File.Exists(HistoryPath)) return;
+    try
+    {
+        var writer = new StreamWriter(client.GetStream(), Encoding.UTF8) { AutoFlush = true };
+        foreach (var line in File.ReadLines(HistoryPath).TakeLast(200)) // last 200 lines
+            writer.WriteLine(line);
+    }
+    catch { }
+}
     private static List<TcpClient> clients = new List<TcpClient>();
     private static readonly object lockObj = new object();
 
@@ -29,6 +56,7 @@ class RelayServer
             TcpClient client = await listener.AcceptTcpClientAsync();
             lock (lockObj)
             {
+                SendHistory(client); 
                 clients.Add(client);
             }
             Console.WriteLine("[Server] A new user connected!");
@@ -69,6 +97,7 @@ class RelayServer
     {
         lock (lockObj)
         {
+            SaveMessage(message);
             foreach (var client in clients)
             {
                 if (client != sender)

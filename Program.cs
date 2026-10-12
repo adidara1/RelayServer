@@ -5,46 +5,25 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using System.Threading.Tasks;
-using System.Linq; 
 
 class RelayServer
 {
-    private static readonly string HistoryPath =
-    Environment.GetEnvironmentVariable("HISTORY_PATH") ?? "/data/chat_history.txt";
-private static void SaveMessage(string message)
-{
-    try
-    {
-        Directory.CreateDirectory(Path.GetDirectoryName(HistoryPath)!);
-        File.AppendAllText(HistoryPath,
-            $"[{DateTime.UtcNow.AddHours(2):HH:mm}] {message}{Environment.NewLine}");
-    }
-    catch (Exception ex)
-    {
-        Console.WriteLine($"[Server] Could not save message: {ex.Message}");
-    }
-}
-private static void SendHistory(TcpClient client)
-{
-    if (!File.Exists(HistoryPath)) return;
-    try
-    {
-        var writer = new StreamWriter(client.GetStream(), Encoding.UTF8) { AutoFlush = true };
-        foreach (var line in File.ReadLines(HistoryPath).TakeLast(200)) // last 200 lines
-            writer.WriteLine(line);
-    }
-    catch { }
-}
     private static List<TcpClient> clients = new List<TcpClient>();
     private static readonly object lockObj = new object();
 
     static async Task Main(string[] args)
     {
         // Support cloud hosting environment variables for the port, default to 5000
-        int port = 8080;
+        int port = 5000;
         if (int.TryParse(Environment.GetEnvironmentVariable("PORT"), out int envPort))
         {
             port = envPort;
+        }
+        try { await Database.InitializeAsync(); }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[DB] Could not connect: {ex.Message}");
+            return;
         }
 
         TcpListener listener = new TcpListener(IPAddress.Any, port);
@@ -56,7 +35,6 @@ private static void SendHistory(TcpClient client)
             TcpClient client = await listener.AcceptTcpClientAsync();
             lock (lockObj)
             {
-                SendHistory(client); 
                 clients.Add(client);
             }
             Console.WriteLine("[Server] A new user connected!");
@@ -97,7 +75,6 @@ private static void SendHistory(TcpClient client)
     {
         lock (lockObj)
         {
-            SaveMessage(message);
             foreach (var client in clients)
             {
                 if (client != sender)

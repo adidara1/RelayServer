@@ -1,25 +1,35 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using System.Threading.Tasks;
+using System.Linq;
 
 class RelayServer
 {
+    private static readonly string HistoryPath =
+        Environment.GetEnvironmentVariable("HISTORY_PATH") ?? "/data/chat_history.txt";
+
+    // UTF-8 without the byte-order mark, so no invisible characters are sent
+    private static readonly Encoding Utf8NoBom = new UTF8Encoding(false);
+
     private static List<TcpClient> clients = new List<TcpClient>();
     private static readonly object lockObj = new object();
 
     static async Task Main(string[] args)
     {
-        // Support cloud hosting environment variables for the port, default to 5000
-        int port = 5000;
+        int port = 8080;
         if (int.TryParse(Environment.GetEnvironmentVariable("PORT"), out int envPort))
         {
             port = envPort;
         }
-        try { await Database.InitializeAsync(); }
+
+        try
+        {
+            await Database.InitializeAsync();
+        }
         catch (Exception ex)
         {
             Console.WriteLine($"[DB] Could not connect: {ex.Message}");
@@ -33,32 +43,86 @@ class RelayServer
         while (true)
         {
             TcpClient client = await listener.AcceptTcpClientAsync();
-            lock (lockObj)
-            {
-                clients.Add(client);
-            }
-            Console.WriteLine("[Server] A new user connected!");
-
-            _ = HandleClientAsync(client);
+            Console.WriteLine("[Server] Incoming connection...");
+            _ = HandleClientAsync(client);   // login happens inside
         }
+    }
+
+    // Reads the first line (LOGIN|name|password or REGISTER|name|password).
+    // Returns the user's name on success, or null on failure.
+    private static async Task<string?> AuthenticateAsync(StreamReader reader, StreamWriter writer)
+    {
+        string? line = await reader.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(15));
+        if (line == null) return null;
+
+        string[] parts = line.Split('|', 3);   // the password may itself contain '|'
+        if (parts.Length != 3)
+        {
+            await writer.WriteLineAsync("ERROR|Invalid request.");
+            return null;
+        }
+
+        string type = parts[0];
+        string username = parts[1].Trim();
+        string password = parts[2];
+
+        if (type == "REGISTER")
+        {
+            var (ok, error) = await Database.RegisterAsync(username, password);
+            if (!ok)
+            {
+                await writer.WriteLineAsync($"ERROR|{error}");
+                return null;
+            }
+            await writer.WriteLineAsync($"OK|{username}");
+            return username;
+        }
+
+        if (type == "LOGIN")
+        {
+            string? name = await Database.VerifyLoginAsync(username, password);
+            if (name == null)
+            {
+                await writer.WriteLineAsync("ERROR|Wrong username or password.");
+                return null;
+            }
+            await writer.WriteLineAsync($"OK|{name}");
+            return name;
+        }
+
+        await writer.WriteLineAsync("ERROR|Invalid request.");
+        return null;
     }
 
     private static async Task HandleClientAsync(TcpClient client)
     {
         NetworkStream stream = client.GetStream();
         StreamReader reader = new StreamReader(stream, Encoding.UTF8);
+        StreamWriter writer = new StreamWriter(stream, Utf8NoBom) { AutoFlush = true };
+        string? userName = null;
 
         try
         {
-            string? message;
-            while ((message = await reader.ReadLineAsync()) != null)
+            userName = await AuthenticateAsync(reader, writer);
+            if (userName == null) return;   // the finally block closes the connection
+
+            lock (lockObj)
             {
-                Broadcast(message, client);
+                SendHistory(client);   // only logged-in users see the history
+                clients.Add(client);
+            }
+            Console.WriteLine($"[Server] {userName} joined.");
+
+            string? text;
+            while ((text = await reader.ReadLineAsync()) != null)
+            {
+                if (!string.IsNullOrWhiteSpace(text))
+                    Broadcast(userName, text, client);
             }
         }
         catch
         {
-            // Handle client disconnect
+            // Client disconnected or login timed out
         }
         finally
         {
@@ -67,30 +131,58 @@ class RelayServer
                 clients.Remove(client);
             }
             client.Close();
-            Console.WriteLine("[Server] A user disconnected.");
+            Console.WriteLine(userName != null
+                ? $"[Server] {userName} left."
+                : "[Server] A connection closed.");
         }
     }
 
-    private static void Broadcast(string message, TcpClient sender)
+    private static void Broadcast(string userName, string text, TcpClient sender)
     {
+        // Built once, so live and saved messages look identical
+        string line = $"[{DateTime.UtcNow.AddHours(2):HH:mm}] {userName}: {text}";
+
         lock (lockObj)
         {
+            SaveMessage(line);
             foreach (var client in clients)
             {
-                if (client != sender)
+                if (client == sender) continue;
+                try
                 {
-                    try
-                    {
-                        NetworkStream stream = client.GetStream();
-                        StreamWriter writer = new StreamWriter(stream, Encoding.UTF8) { AutoFlush = true };
-                        writer.WriteLine(message);
-                    }
-                    catch
-                    {
-                        // Ignore failed writes to dead clients
-                    }
+                    var w = new StreamWriter(client.GetStream(), Utf8NoBom) { AutoFlush = true };
+                    w.WriteLine(line);
+                }
+                catch
+                {
+                    // Ignore failed writes to dead clients
                 }
             }
         }
+    }
+
+    private static void SaveMessage(string line)
+    {
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(HistoryPath)!);
+            File.AppendAllText(HistoryPath, line + Environment.NewLine);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Server] Could not save message: {ex.Message}");
+        }
+    }
+
+    private static void SendHistory(TcpClient client)
+    {
+        if (!File.Exists(HistoryPath)) return;
+        try
+        {
+            var writer = new StreamWriter(client.GetStream(), Utf8NoBom) { AutoFlush = true };
+            foreach (var line in File.ReadLines(HistoryPath).TakeLast(200))
+                writer.WriteLine(line);
+        }
+        catch { }
     }
 }

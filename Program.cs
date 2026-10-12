@@ -114,11 +114,11 @@ class RelayServer
             {
                 SendHistory(client);   // only logged-in users see the history
                 clients.Add(client);
-                
-                // Mark user as active since their app instance is now connected
                 userActivity[userName] = true;
             }
+            
             Console.WriteLine($"[Server] {userName} joined. Active status: True");
+            await BroadcastUserList();
 
             string? text;
             while ((text = await reader.ReadLineAsync()) != null)
@@ -138,22 +138,45 @@ class RelayServer
                 clients.Remove(client);
                 if (userName != null)
                 {
-                    // Mark user as inactive since their app instance closed/disconnected
                     userActivity[userName] = false;
                 }
             }
-            Console.WriteLine(userName != null
-                ? $"[Server] {userName} left. Active status: False"
-                : "[Server] A connection closed.");
+            
+            if (userName != null)
+            {
+                Console.WriteLine($"[Server] {userName} left. Active status: False");
+                await BroadcastUserList();
+            }
+            else
+            {
+                Console.WriteLine("[Server] A connection closed.");
+            }
+
+            client.Close();
         }
     }
 
-    // Helper method if you want to check a user's active boolean status from elsewhere in code
-    public static bool IsUserActive(string username)
+    private static async Task BroadcastUserList()
     {
+        List<string> activeNames;
         lock (lockObj)
         {
-            return userActivity.TryGetValue(username, out bool isActive) && isActive;
+            activeNames = userActivity.Where(pair => pair.Value).Select(pair => pair.Key).ToList();
+        }
+
+        string userListMessage = "USERS|" + string.Join(",", activeNames);
+
+        lock (lockObj)
+        {
+            foreach (var client in clients)
+            {
+                try
+                {
+                    var w = new StreamWriter(client.GetStream(), Utf8NoBom) { AutoFlush = true };
+                    w.WriteLine(userListMessage);
+                }
+                catch { }
+            }
         }
     }
 

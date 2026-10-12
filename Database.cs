@@ -1,4 +1,6 @@
 using MySqlConnector;
+using System.Security.Cryptography;
+using System.Text.RegularExpressions;
 
 public static class Database
 {

@@ -16,6 +16,10 @@ class RelayServer
     private static readonly Encoding Utf8NoBom = new UTF8Encoding(false);
 
     private static List<TcpClient> clients = new List<TcpClient>();
+    
+    // Tracks whether each username has an active open app/connection
+    private static Dictionary<string, bool> userActivity = new Dictionary<string, bool>();
+    
     private static readonly object lockObj = new object();
 
     static async Task Main(string[] args)
@@ -110,8 +114,11 @@ class RelayServer
             {
                 SendHistory(client);   // only logged-in users see the history
                 clients.Add(client);
+                
+                // Mark user as active since their app instance is now connected
+                userActivity[userName] = true;
             }
-            Console.WriteLine($"[Server] {userName} joined.");
+            Console.WriteLine($"[Server] {userName} joined. Active status: True");
 
             string? text;
             while ((text = await reader.ReadLineAsync()) != null)
@@ -129,11 +136,24 @@ class RelayServer
             lock (lockObj)
             {
                 clients.Remove(client);
+                if (userName != null)
+                {
+                    // Mark user as inactive since their app instance closed/disconnected
+                    userActivity[userName] = false;
+                }
             }
-            client.Close();
             Console.WriteLine(userName != null
-                ? $"[Server] {userName} left."
+                ? $"[Server] {userName} left. Active status: False"
                 : "[Server] A connection closed.");
+        }
+    }
+
+    // Helper method if you want to check a user's active boolean status from elsewhere in code
+    public static bool IsUserActive(string username)
+    {
+        lock (lockObj)
+        {
+            return userActivity.TryGetValue(username, out bool isActive) && isActive;
         }
     }
 
